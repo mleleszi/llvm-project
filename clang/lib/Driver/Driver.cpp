@@ -2540,10 +2540,14 @@ bool Driver::HandleImmediateArgs(Compilation &C) {
   }
 
   if (C.getArgs().hasArg(options::OPT_print_runtime_dir)) {
-    if (std::optional<std::string> RuntimePath = TC.getRuntimePath())
-      llvm::outs() << *RuntimePath << '\n';
-    else
-      llvm::outs() << TC.getCompilerRTPath() << '\n';
+    for (auto RuntimePath :
+         {TC.getRuntimePath(), std::make_optional(TC.getCompilerRTPath())}) {
+      if (RuntimePath && getVFS().exists(*RuntimePath)) {
+        llvm::outs() << *RuntimePath << '\n';
+        return false;
+      }
+    }
+    llvm::outs() << "(runtime dir is not present)" << '\n';
     return false;
   }
 
@@ -6459,9 +6463,16 @@ const char *Driver::GetNamedOutputPath(Compilation &C, const JobAction &JA,
               (JA.getOffloadingDeviceKind() == Action::OFK_OpenMP && TC &&
                TC->getTriple().isAMDGPU()));
     };
-    if (!AtTopLevel && JA.getType() == types::TY_LLVM_BC &&
-        (C.getArgs().hasArg(options::OPT_emit_llvm) ||
-         IsAMDRDCInCompilePhase(JA, C.getArgs())))
+
+    // The linker wrapper may not support the input and output files to be the
+    // same one, and without it -save-temps can fail.
+    bool IsLinkerWrapper =
+        JA.getType() == types::TY_Object && isa<LinkerWrapperJobAction>(JA);
+    bool IsEmitBitcode = JA.getType() == types::TY_LLVM_BC &&
+                         (C.getArgs().hasArg(options::OPT_emit_llvm) ||
+                          IsAMDRDCInCompilePhase(JA, C.getArgs()));
+
+    if (!AtTopLevel && (IsLinkerWrapper || IsEmitBitcode))
       Suffixed += ".tmp";
     Suffixed += '.';
     Suffixed += Suffix;
